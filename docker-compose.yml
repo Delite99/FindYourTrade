@@ -1,0 +1,104 @@
+# ══════════════════════════════════════════════════════════════════════════════
+#  FindYourTrade — Docker Compose
+#  Services:  db (pgvector)  |  backend (FastAPI :9000)  |  frontend (Nginx :80)
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ── Shared network ─────────────────────────────────────────────────────────────
+networks:
+  barter_net:
+    driver: bridge
+
+# ── Named volume for Postgres data ────────────────────────────────────────────
+volumes:
+  pgdata:
+
+# ── Services ──────────────────────────────────────────────────────────────────
+services:
+
+  # ── PostgreSQL + pgvector ────────────────────────────────────────────────────
+  db:
+    image: pgvector/pgvector:pg16   # Official pgvector image on Postgres 16
+    container_name: barter_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB:       ${POSTGRES_DB:-bartertrade}
+      POSTGRES_USER:     ${POSTGRES_USER:-barteruser}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-barterpass}
+    ports:
+      - "5432:5432"                 # expose to host for psql / pgAdmin access
+    volumes:
+      - pgdata:/var/lib/postgresql/data          # persist data across restarts
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro  # bootstrap schema
+    networks:
+      - barter_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-barteruser} -d ${POSTGRES_DB:-bartertrade}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── FastAPI backend ───────────────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: barter_backend
+    restart: unless-stopped
+    ports:
+      - "9000:9000"                 # host:container
+    environment:
+      # Meta / AI model keys (from .env or environment)
+      META_API_BASE:        ${META_API_BASE:-}
+      META_API_KEY:         ${META_API_KEY:-}
+      MODEL_SPARK:          ${MODEL_SPARK:-muse-spark-1.3-contributor}
+      MODEL_WONDER:         ${MODEL_WONDER:-muse-wonder-1.0}
+      MODEL_TRANSCRIBE:     ${MODEL_TRANSCRIBE:-muse-voice-transcribe-1.0}
+      MODEL_SAM:            ${MODEL_SAM:-sam-3.1}
+      MODEL_IMAGE:          ${MODEL_IMAGE:-muse-image-1.0}
+      # Model runtime tuning (retries, cache, spend guard, vision sampling)
+      META_TIMEOUT:         ${META_TIMEOUT:-45}
+      META_MAX_RETRIES:     ${META_MAX_RETRIES:-3}
+      META_CACHE_TTL:       ${META_CACHE_TTL:-900}
+      META_MAX_CALLS:       ${META_MAX_CALLS:-400}
+      VISION_MAX_FRAMES:    ${VISION_MAX_FRAMES:-6}
+      FRAME_MAX_EDGE:       ${FRAME_MAX_EDGE:-768}
+      # Muse Voice Transcribe settings
+      ASR_MODE:             ${ASR_MODE:-ENDPOINTING}
+      ASR_LANGUAGE_BIAS:    ${ASR_LANGUAGE_BIAS:-English}
+      ASR_KEYWORDS:         ${ASR_KEYWORDS:-}
+      # Comma-separated allowed origins ("*" for local dev)
+      CORS_ORIGINS:         ${CORS_ORIGINS:-*}
+      # Database connection string
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-barteruser}:${POSTGRES_PASSWORD:-barterpass}@db:5432/${POSTGRES_DB:-bartertrade}
+    volumes:
+      # Bind-mount the source so the container always runs the code on disk.
+      # Without this, `docker cp` / code edits drift from the baked image and
+      # routes exist in source but 404 at runtime until a full rebuild.
+      - ./backend/app:/app/app:ro
+      # …but uploads must stay writable: trader verification photos are written
+      # here. Without this nested mount the write hits the read-only parent and
+      # the request (and previously the whole process) dies.
+      - ./backend/app/uploads:/app/app/uploads
+    depends_on:
+      db:
+        condition: service_healthy  # wait until Postgres is ready
+    networks:
+      - barter_net
+
+  # ── React/Vite frontend (Nginx) ───────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: barter_frontend
+    restart: unless-stopped
+    ports:
+      - "80:80"                     # access the app at http://localhost
+    volumes:
+      # Serve the freshly built bundle from disk instead of the baked image,
+      # so `npm run build` is enough to ship a frontend change.
+      - ./frontend/dist:/usr/share/nginx/html:ro
+    depends_on:
+      - backend
+    networks:
+      - barter_net

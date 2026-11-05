@@ -1,0 +1,9 @@
+# Frontend .dockerignore — keep build context lean
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+.git/
+.gitignore
+*.log

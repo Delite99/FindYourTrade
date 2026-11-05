@@ -1,0 +1,9 @@
+node_modules/
+dist/
+__pycache__/
+*.pyc
+backend/data/
+backend/uploads/
+.env
+.DS_Store
+*.mp4
